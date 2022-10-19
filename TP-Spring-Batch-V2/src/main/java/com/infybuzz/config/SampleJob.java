@@ -1,5 +1,12 @@
 package com.infybuzz.config;
 
+import java.io.IOException;
+import java.io.Writer;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.Date;
+import java.util.List;
+
 import javax.sql.DataSource;
 
 import org.springframework.batch.core.Job;
@@ -8,15 +15,31 @@ import org.springframework.batch.core.configuration.annotation.JobBuilderFactory
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
+import org.springframework.batch.core.step.skip.AlwaysSkipItemSkipPolicy;
+import org.springframework.batch.item.adapter.ItemReaderAdapter;
+import org.springframework.batch.item.adapter.ItemWriterAdapter;
+import org.springframework.batch.item.database.BeanPropertyItemSqlParameterSourceProvider;
+import org.springframework.batch.item.database.ItemPreparedStatementSetter;
+import org.springframework.batch.item.database.JdbcBatchItemWriter;
 import org.springframework.batch.item.database.JdbcCursorItemReader;
+import org.springframework.batch.item.file.FlatFileFooterCallback;
+import org.springframework.batch.item.file.FlatFileHeaderCallback;
 import org.springframework.batch.item.file.FlatFileItemReader;
+import org.springframework.batch.item.file.FlatFileItemWriter;
+import org.springframework.batch.item.file.FlatFileParseException;
 import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
 import org.springframework.batch.item.file.mapping.DefaultLineMapper;
+import org.springframework.batch.item.file.transform.BeanWrapperFieldExtractor;
+import org.springframework.batch.item.file.transform.DelimitedLineAggregator;
 import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
+import org.springframework.batch.item.json.JacksonJsonObjectMarshaller;
 import org.springframework.batch.item.json.JacksonJsonObjectReader;
+import org.springframework.batch.item.json.JsonFileItemWriter;
 import org.springframework.batch.item.json.JsonItemReader;
 import org.springframework.batch.item.xml.StaxEventItemReader;
+import org.springframework.batch.item.xml.StaxEventItemWriter;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.jdbc.DataSourceBuilder;
@@ -24,15 +47,21 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.BeanPropertyRowMapper;
+import org.springframework.objenesis.instantiator.basic.NewInstanceInstantiator;
 import org.springframework.oxm.jaxb.Jaxb2Marshaller;
 
+import com.infybuzz.listener.SkipListener;
+import com.infybuzz.listener.SkipListenerImpl;
 import com.infybuzz.model.StudentCsv;
 import com.infybuzz.model.StudentJDBC;
 import com.infybuzz.model.StudentJson;
+import com.infybuzz.model.StudentResponse;
 import com.infybuzz.model.StudentXML;
 import com.infybuzz.processor.FirstItemProcessor;
 import com.infybuzz.reader.FirstItemReader;
+import com.infybuzz.service.StudentService;
 import com.infybuzz.writer.FirstItemWriter;
 
 @Configuration
@@ -53,18 +82,26 @@ public class SampleJob {
 	@Autowired
 	private FirstItemWriter firstItemWriter;
 	
-	@Bean
-	@Primary
-	@ConfigurationProperties(prefix = "spring.datasource")
-	public DataSource dataSource() {
-		return DataSourceBuilder.create().build();
-	};
+	@Autowired
+	private StudentService studentService;
 	
-	@Bean
-	@ConfigurationProperties(prefix = "spring.studentdatasource")
-	public DataSource studentDataSource() {
-		return DataSourceBuilder.create().build();
-	};
+	@Autowired
+	private SkipListener skipListener;
+	
+	@Autowired
+	private SkipListenerImpl skipListenerImpl;
+	
+	@Autowired
+	@Qualifier("dataSource")
+	private DataSource dataSource;
+	
+	@Autowired
+	@Qualifier("studentDataSource")
+	private DataSource studentDataSource;
+	
+	@Autowired
+	@Qualifier("postgresDataSource")
+	private DataSource postgresDataSource;
 
 	@Bean
 	public Job chunkJob() {
@@ -76,11 +113,19 @@ public class SampleJob {
 	
 	private Step firstChunkStep() {
 		return stepBuilderFactory.get("First Chunk Step")
-				.<StudentJDBC, StudentJDBC>chunk(3)
-				.reader(jdbcCursorItemReader())
-				//.processor(firstItemProcessor)
-				.writer(firstItemWriter)
+				.<StudentCsv, StudentJson>chunk(3)
+				.reader(flatFileItemReader(null))
+				.processor(firstItemProcessor)
+				.writer(jsonFileItemWriter(null))
+				.faultTolerant()
+				//.skip(FlatFileParseException.class)
+				//.skipLimit(Integer.MAX_VALUE)
+				.skipPolicy(new AlwaysSkipItemSkipPolicy())
+				.retryLimit(1)
+				.retry(Throwable.class)
+				.listener(skipListenerImpl)
 				.build();
+		
 	}
 	
 	@StepScope
@@ -169,7 +214,7 @@ public class SampleJob {
 	public JdbcCursorItemReader<StudentJDBC> jdbcCursorItemReader() {
 		JdbcCursorItemReader<StudentJDBC> jdbcCursorItemReader = new JdbcCursorItemReader<>();
 		
-		jdbcCursorItemReader.setDataSource(studentDataSource());
+		jdbcCursorItemReader.setDataSource(studentDataSource);
 		jdbcCursorItemReader.setSql("select id, first_name as firstName, last_name as lastName, email from student");
 		
 		jdbcCursorItemReader.setRowMapper(new BeanPropertyRowMapper<StudentJDBC>() {
@@ -184,6 +229,139 @@ public class SampleJob {
 		
 		return jdbcCursorItemReader;
 	}
+	
+//	public ItemReaderAdapter<StudentResponse> itemReaderAdapter() {
+//		ItemReaderAdapter<StudentResponse> itemReaderAdapter = new ItemReaderAdapter<>();
+//		
+//		itemReaderAdapter.setTargetObject(studentService);
+//		itemReaderAdapter.setTargetMethod("getStudent");
+//		
+//		return itemReaderAdapter;
+//	}
+	
+	@StepScope
+	@Bean	
+	public FlatFileItemWriter<StudentJDBC> flatFileItemWriter(@Value("#{jobParameters['outputFile']}") FileSystemResource fileSystemResource) {
+		FlatFileItemWriter<StudentJDBC> flatFileItemWriter = new FlatFileItemWriter<>();
+		
+		flatFileItemWriter.setResource(fileSystemResource);
+		flatFileItemWriter.setHeaderCallback(new FlatFileHeaderCallback() {
+			
+			@Override
+			public void writeHeader(Writer writer) throws IOException {
+				writer.write("Id,First Name,Last Name,Email");
+				
+			}
+		});
+		
+		flatFileItemWriter.setLineAggregator(new DelimitedLineAggregator<StudentJDBC>() {
+			{
+				// setDelimiter("|");
+				setFieldExtractor(new BeanWrapperFieldExtractor<StudentJDBC>() {
+					{
+						setNames(new String[] {"id", "firstName", "lastName", "email"});
+					}
+				});
+			}
+		});
+		
+		flatFileItemWriter.setFooterCallback(new FlatFileFooterCallback() {
+			
+			@Override
+			public void writeFooter(Writer writer) throws IOException {
+				writer.write("Create @" + new Date());
+				
+			}
+		});
+		
+		
+		return flatFileItemWriter;
+	}
+	
+	@StepScope
+	@Bean
+	public JsonFileItemWriter<StudentJson> jsonFileItemWriter(@Value("#{jobParameters['outputFile']}") FileSystemResource fileSystemResource) {
+		
+		
+		JsonFileItemWriter<StudentJson> jsonFileItemWriter = 
+				new JsonFileItemWriter<StudentJson>(fileSystemResource, 
+						new JacksonJsonObjectMarshaller<StudentJson>()) {
+			@Override
+			public String doWrite(List<? extends StudentJson> items) {
+				items.stream().forEach(item -> {
+					if(item.getId() == 3) {
+						throw new NullPointerException();
+					}
+				});
+				return super.doWrite(items);
+			}
+		};
+		
+		return jsonFileItemWriter;
+	}
+	
+	@StepScope
+	@Bean
+	public StaxEventItemWriter<StudentJDBC> staxEventItemWriter(@Value("#{jobParameters['outputFile']}") FileSystemResource fileSystemResource) {
+		StaxEventItemWriter<StudentJDBC> staxEventItemWriter = new StaxEventItemWriter<>();
+		
+		staxEventItemWriter.setResource(fileSystemResource);
+		staxEventItemWriter.setRootTagName("students");
+		staxEventItemWriter.setMarshaller(new Jaxb2Marshaller() {
+			{
+				setClassesToBeBound(StudentJDBC.class);
+			}
+		});
+		
+		return staxEventItemWriter;
+	}
+	
+	@Bean	
+	public JdbcBatchItemWriter<StudentCsv> jdbcBatchItemWriter() {
+		JdbcBatchItemWriter<StudentCsv> jdbcBatchItemWriter = new JdbcBatchItemWriter<>();
+		
+		jdbcBatchItemWriter.setDataSource(studentDataSource);
+		
+		// Normal Sql Query
+//		jdbcBatchItemWriter.setSql(
+//				"insert into student(id, first_name, last_name, email)"
+//				+ "values (:id, :firstName, :lastName, :email)");
+//		jdbcBatchItemWriter.setItemSqlParameterSourceProvider(new BeanPropertyItemSqlParameterSourceProvider<StudentCsv>());
+		
+		// WIth PrepareStatement		
+		jdbcBatchItemWriter.setSql(
+				"insert into student(id, first_name, last_name, email)"
+				+ "values (?,?,?,?)");
+		
+		jdbcBatchItemWriter.setItemPreparedStatementSetter(new ItemPreparedStatementSetter<StudentCsv>() {
+			
+			@Override
+			public void setValues(StudentCsv item, PreparedStatement ps) throws SQLException {
+					ps.setLong(1, item.getId());
+					ps.setString(2,  item.getFirstName());
+					ps.setString(3,  item.getLastName());
+					ps.setString(4,  item.getEmail());
+				
+			}
+		});	
+		
+		
+		return jdbcBatchItemWriter;
+	}
+	
+	
+	public ItemWriterAdapter<StudentCsv> itemWriterAdapter() {
+		ItemWriterAdapter<StudentCsv> itemWriterAdapter = new ItemWriterAdapter<>();
+	
+	itemWriterAdapter.setTargetObject(studentService);
+	itemWriterAdapter.setTargetMethod("restCallToCreateStudent");
+	
+	return itemWriterAdapter;
+}
+
+	
+	
+	
 	
 	
 

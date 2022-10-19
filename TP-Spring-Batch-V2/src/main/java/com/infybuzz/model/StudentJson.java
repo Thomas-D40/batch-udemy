@@ -8,7 +8,7 @@ public class StudentJson {
 
 	private Long id;
 	
-	@JsonProperty("firstName")
+	@JsonProperty("first_name")
 	private String firstName;
 
 	private String lastName;

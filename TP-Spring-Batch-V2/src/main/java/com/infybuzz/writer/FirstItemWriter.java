@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 
 import com.infybuzz.model.StudentCsv;
 import com.infybuzz.model.StudentJson;
+import com.infybuzz.model.StudentResponse;
 import com.infybuzz.model.StudentXML;
 import com.infybuzz.model.StudentJDBC;
 

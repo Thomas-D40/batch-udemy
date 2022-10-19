@@ -1,17 +1,21 @@
-package com.infybuzz.model;
+package com.infybuzz.app;
 
-import javax.xml.bind.annotation.XmlRootElement;
-
-@XmlRootElement(name = "student")
-public class StudentJDBC {
+public class StudentRequest {
+	
 	private Long id;
-	
-	
+
 	private String firstName;
 
 	private String lastName;
 
 	private String email;
+
+	public StudentRequest(Long id, String firstName, String lastName, String email) {
+		this.id = id;
+		this.firstName = firstName;
+		this.lastName = lastName;
+		this.email = email;
+	}
 
 	public Long getId() {
 		return id;
@@ -45,9 +49,4 @@ public class StudentJDBC {
 		this.email = email;
 	}
 
-	@Override
-	public String toString() {
-		return "StudentCsv [id=" + id + ", firstName=" + firstName + ", lastName=" + lastName + ", email=" + email
-				+ "]";
-	}
 }

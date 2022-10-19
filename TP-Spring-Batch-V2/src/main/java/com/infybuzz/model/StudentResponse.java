@@ -10,11 +10,8 @@ public class StudentResponse {
 
 	private String email;
 
-	public StudentResponse(Long id, String firstName, String lastName, String email) {
-		this.id = id;
-		this.firstName = firstName;
-		this.lastName = lastName;
-		this.email = email;
+	public StudentResponse() {
+		
 	}
 
 	public Long getId() {
@@ -48,5 +45,13 @@ public class StudentResponse {
 	public void setEmail(String email) {
 		this.email = email;
 	}
+
+	@Override
+	public String toString() {
+		return "StudentResponse [id=" + id + ", firstName=" + firstName + ", lastName=" + lastName + ", email=" + email
+				+ "]";
+	}
+	
+	
 
 }
